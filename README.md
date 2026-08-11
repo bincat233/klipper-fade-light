@@ -36,19 +36,24 @@ No parameters — one `[fade_light]` section handles fading for every `output_pi
 type: git_repo
 path: ~/klipper-fade-light
 origin: https://github.com/bincat233/klipper-fade-light.git
-primary_branch: main
+primary_branch: master
 managed_services: klipper
 ```
 
 ## Usage
 
 ```
-FADE_LIGHT PIN=<output_pin name> TARGET=<0.0-1.0> [DURATION=<seconds, default 1.0>]
+FADE_LIGHT PIN=<output_pin name> TARGET=<0.0-1.0>
+    [DURATION=<seconds, default 1.0>]
+    [EASING=<linear|ease_in|ease_out|ease_in_out, default linear>]
+    [GAMMA=<exponent, default 1.0 (no correction)>]
 ```
 
 - `PIN` — the name of any configured `[output_pin NAME]` section (just `NAME`, not the `output_pin` prefix).
 - `TARGET` — target value, `0.0`–`1.0`.
 - `DURATION` — fade time in seconds. Defaults to `1.0`.
+- `EASING` — shapes how fade progress moves through time. `linear` (default) is constant speed; `ease_in` starts slow; `ease_out` ends slow; `ease_in_out` starts and ends slow, speeds up in the middle. This is a *timing/pacing* effect, independent of brightness.
+- `GAMMA` — compensates for the eye's non-linear brightness perception. A plain linear PWM ramp looks like it rushes through the dim end and lingers at the bright end, because perceived brightness is roughly a power-law function of physical output. Values around `2.2`–`2.8` (the common display/LED gamma convention) make the fade look more evenly paced. Applied to fade progress (`value = t ** gamma`), so it's most accurate for fades spanning the full `0..1` range. Defaults to `1.0` (no correction, matches plain linear behavior).
 
 ### Example
 
@@ -67,6 +72,8 @@ shutdown_value: 0
 FADE_LIGHT PIN=left_light TARGET=1.0 DURATION=2
 ; fade out over 0.5 seconds
 FADE_LIGHT PIN=left_light TARGET=0.0 DURATION=0.5
+; more natural-looking fade: eased timing + gamma-corrected brightness
+FADE_LIGHT PIN=left_light TARGET=1.0 DURATION=2 EASING=ease_in_out GAMMA=2.2
 ```
 
 Calling `FADE_LIGHT` again on a pin that's mid-fade retargets it smoothly from its current value — no jump.

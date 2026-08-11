@@ -12,12 +12,37 @@
 # the 0.5s-fixed update interval of the built-in SET_PIN ... TEMPLATE=
 # mechanism).
 #
-# Usage: FADE_LIGHT PIN=<output_pin name> TARGET=<0.0-1.0> [DURATION=<seconds, default 1.0>]
+# Usage: FADE_LIGHT PIN=<output_pin name> TARGET=<0.0-1.0>
+#            [DURATION=<seconds, default 1.0>]
+#            [EASING=<linear|ease_in|ease_out|ease_in_out, default linear>]
+#            [GAMMA=<exponent, default 1.0 (no correction)>]
+#
+# EASING shapes how fade progress moves through time (e.g. ease_in_out
+# starts and ends slow, speeds up in the middle) - this is a timing/pacing
+# effect, independent of brightness.
+#
+# GAMMA compensates for the eye's non-linear brightness perception: a
+# plain linear PWM ramp looks like it rushes through the dim end and
+# lingers at the bright end, because perceived brightness is roughly a
+# power-law function of physical output. Applying VALUE = t**GAMMA (with
+# GAMMA around 2.2-2.8, the common display/LED convention) makes the
+# fade look more evenly paced to the eye. This is applied to the fade's
+# progress (0..1), not to absolute physical brightness, so it is most
+# accurate for fades that span the full 0..1 range; it is still a
+# reasonable approximation for partial-range fades.
 #
 # Install: symlink this file into ~/klipper/klippy/extras/fade_light.py,
 # then add a bare [fade_light] section to printer.cfg.
 
 FADE_UPDATE_INTERVAL = 0.02  # 50Hz
+
+EASINGS = {
+    'linear': lambda t: t,
+    'ease_in': lambda t: t * t,
+    'ease_out': lambda t: 1.0 - (1.0 - t) * (1.0 - t),
+    'ease_in_out': lambda t: (2.0 * t * t if t < 0.5
+                               else 1.0 - ((-2.0 * t + 2.0) ** 2) / 2.0),
+}
 
 
 class FadeLight:
@@ -35,6 +60,13 @@ class FadeLight:
         pin_name = gcmd.get('PIN')
         target = gcmd.get_float('TARGET', minval=0., maxval=1.)
         duration = gcmd.get_float('DURATION', 1.0, above=0.)
+        gamma = gcmd.get_float('GAMMA', 1.0, above=0.)
+        easing_name = gcmd.get('EASING', 'linear')
+        easing_fn = EASINGS.get(easing_name)
+        if easing_fn is None:
+            raise gcmd.error(
+                "Unknown EASING '%s', must be one of: %s"
+                % (easing_name, ', '.join(sorted(EASINGS))))
         pin = self.printer.lookup_object('output_pin ' + pin_name, None)
         if pin is None:
             raise gcmd.error("Unknown output_pin '%s'" % (pin_name,))
@@ -49,17 +81,23 @@ class FadeLight:
         state['target_value'] = target
         state['start_time'] = eventtime
         state['duration'] = duration
+        state['gamma'] = gamma
+        state['easing'] = easing_fn
         self.reactor.update_timer(state['timer'], self.reactor.NOW)
 
     def _update(self, pin_name, eventtime):
         state = self.fades[pin_name]
-        t = (eventtime - state['start_time']) / state['duration']
-        if t >= 1.0:
-            state['pin'].gcrq.send_async_request(state['target_value'])
-            return self.reactor.NEVER
+        t_raw = (eventtime - state['start_time']) / state['duration']
+        done = t_raw >= 1.0
+        t_raw = min(max(t_raw, 0.0), 1.0)
+        t = state['easing'](t_raw)
+        if state['gamma'] != 1.0:
+            t = t ** state['gamma']
         value = (state['start_value']
                  + (state['target_value'] - state['start_value']) * t)
         state['pin'].gcrq.send_async_request(value)
+        if done:
+            return self.reactor.NEVER
         return eventtime + FADE_UPDATE_INTERVAL
 
 
