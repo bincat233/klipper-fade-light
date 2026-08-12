@@ -6,9 +6,9 @@ A tiny [Klipper](https://www.klipper3d.org/) plugin that adds smooth, non-blocki
 
 Klipper's built-in `output_pin` only supports instant value jumps via `SET_PIN PIN=x VALUE=y` — there's no native fade/transition support. The stock workaround (`SET_PIN ... TEMPLATE=`, backed by a `[display_template]`) re-renders on a fixed 0.5s interval hardcoded in Klipper itself, which is coarse and not configurable.
 
-`fade_light.py` adds a `FADE_LIGHT` command that ramps any existing `output_pin` to a target value over a given duration, driven by a Klipper `reactor` timer at 50Hz. It:
+`fade_light.py` adds a `FADE_LIGHT` command that ramps any existing `output_pin` to a target value over a given duration, driven by a Klipper `reactor` timer at a genuine 50Hz. It:
 
-- Updates via the same internal async request path Klipper's own `display_template` mechanism uses (`pin.gcrq.send_async_request`), so it bypasses the G-code queue entirely — safe to call mid-print without blocking other G-code.
+- Writes straight to the pin's MCU command queue (`MCU_pwm.set_pwm()`) — the same low-level path `neopixel.py` uses for color updates — bypassing the G-code queue entirely, so it's safe to call mid-print without blocking other G-code. See [Implementation notes](#implementation-notes) for why it doesn't go through `output_pin`'s own async request helper.
 - Supports multiple pins fading independently and concurrently.
 - Needs no extra hardware and no other plugins.
 
@@ -77,6 +77,12 @@ FADE_LIGHT PIN=left_light TARGET=1.0 DURATION=2 EASING=ease_in_out GAMMA=2.2
 ```
 
 Calling `FADE_LIGHT` again on a pin that's mid-fade retargets it smoothly from its current value — no jump.
+
+## Implementation notes
+
+`output_pin` ships its own async update helper (`GCodeRequestQueue.send_async_request`, used internally by `SET_PIN ... TEMPLATE=`) that looks like the obvious thing to call from a fade timer. Don't — it enforces a `MIN_SCHEDULE_TIME` (0.100s, hardcoded in Klipper's `mcu.py`) as a minimum gap *between* successive requests on the same pin, not just a per-request lead-in margin. Calling it faster than 10Hz doesn't drop the extra calls; each one gets queued with its execution time pushed further into the future than the last, so the requests back up — a `DURATION=1.5` fade would actually take 7-8 seconds to finish draining the backlog, arriving in visible ~100ms steps the whole time. Klipper's only built-in user of that path (`display_template`) refreshes at a fixed 0.5s, so it never trips this.
+
+`fade_light.py` instead calls the pin's `MCU_pwm.set_pwm(print_time, value)` directly — the same primitive `output_pin` itself calls once it's past the queue, and the same style of direct MCU-queue write `neopixel.py` uses for its color updates. That call has no built-in throttle beyond requiring a monotonically non-decreasing clock, which a real-time-driven fade satisfies for free. The trade-off: bypassing `GCodeRequestQueue` means also bypassing its `last_value` bookkeeping, so `fade_light.py` updates `pin.last_value` itself after every write to keep `SET_PIN`'s status reporting (and its own fade-restart logic, which reads `pin.last_value` as the starting point) consistent.
 
 ## Limitations
 

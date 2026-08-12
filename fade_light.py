@@ -33,7 +33,21 @@
 #
 # Install: symlink this file into ~/klipper/klippy/extras/fade_light.py,
 # then add a bare [fade_light] section to printer.cfg.
-
+#
+# Talks to the pin's MCU_pwm.set_pwm() directly instead of going through
+# output_pin's GCodeRequestQueue - the same approach neopixel.py uses to
+# push color updates straight onto the MCU command queue. That queue's
+# send_async_request() enforces a MIN_SCHEDULE_TIME (0.100s) *between*
+# successive requests on the same pin, meant to guard generic/unbounded
+# async triggers (e.g. a runaway display_template); at fade update rates
+# that floor doesn't limit the rate so much as make requests back up and
+# have their execution time pushed further into the future each call,
+# so the fade drags out past DURATION in visible ~100ms steps. set_pwm()
+# itself has no such floor - it only requires a monotonically-increasing
+# clock, which a real-time-driven fade already provides - so we still use
+# min_schedule_time() as the one-shot lead-in margin each call needs to
+# reach the MCU in time (its original purpose), just without chaining it
+# into a minimum gap between calls.
 FADE_UPDATE_INTERVAL = 0.02  # 50Hz
 
 EASINGS = {
@@ -95,7 +109,13 @@ class FadeLight:
             t = t ** state['gamma']
         value = (state['start_value']
                  + (state['target_value'] - state['start_value']) * t)
-        state['pin'].gcrq.send_async_request(value)
+        pin = state['pin']
+        if value != pin.last_value:
+            mcu = pin.mcu_pin.get_mcu()
+            print_time = mcu.estimated_print_time(
+                eventtime + mcu.min_schedule_time())
+            pin.mcu_pin.set_pwm(print_time, value)
+            pin.last_value = value
         if done:
             return self.reactor.NEVER
         return eventtime + FADE_UPDATE_INTERVAL
